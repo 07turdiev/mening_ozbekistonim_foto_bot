@@ -1,5 +1,9 @@
 FROM python:3.12-slim
 
+# Buferlanmagan chiqish - aks holda `docker logs` bo'sh ko'rinadi
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
 WORKDIR /app
 
 COPY requirements.txt .

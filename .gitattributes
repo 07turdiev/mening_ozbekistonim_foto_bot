@@ -1,0 +1,3 @@
+# Linux serverda ishlaydigan fayllar doim LF bo'lishi kerak
+* text=auto eol=lf
+*.bat text eol=crlf

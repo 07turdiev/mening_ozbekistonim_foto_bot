@@ -351,8 +351,12 @@ def main() -> int:
                 self.markups.append(kw.get("reply_markup"))
                 return self
 
-        db_backup = cfg.db_path
+        db_backup, tm_backup = cfg.db_path, cfg.test_mode
         object.__setattr__(cfg, "db_path", Path(tempfile.mkdtemp()) / "restart.db")
+        # Test tanlov muddatiga bog'liq bo'lmasligi kerak: TEST_MODE=0 va muddat
+        # boshlanmagan bo'lsa route_join surat qabulini to'xtatadi - bu to'g'ri
+        # xatti-harakat, lekin bu yerda tekshirilayotgan narsa emas.
+        object.__setattr__(cfg, "test_mode", True)
         try:
             await db.init_db()
             uid = 999
@@ -389,10 +393,12 @@ def main() -> int:
             # «Fotosurat yuborish» bosilganda darrov surat kutilishi kerak
             msg2 = FakeMsg(uid)
             await u.route_join(msg2, state, None, uid, "qaytgan")
-            assert await state.get_state() == u.Submit.photo.state, \
-                f"qayta ro‘yxatdan o‘tishga yuborildi: {await state.get_state()}"
+            got = await state.get_state()
+            assert got == u.Submit.photo.state, \
+                f"surat kutilishi kerak edi, holat: {got}"
         finally:
             object.__setattr__(cfg, "db_path", db_backup)
+            object.__setattr__(cfg, "test_mode", tm_backup)
 
     check("Ma’lumotlar saqlanadi, qayta so‘ralmaydi", lambda: asyncio.run(restart_flow()))
 

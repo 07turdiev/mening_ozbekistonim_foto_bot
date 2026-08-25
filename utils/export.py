@@ -90,6 +90,7 @@ def build_excel(rows, status_filter: str | None = None) -> Path:
     ws.auto_filter.ref = f"A3:{get_column_letter(len(HEADERS))}{len(rows) + 3}"
 
     suffix = f"_{status_filter}" if status_filter else ""
+    cfg.exports_dir.mkdir(parents=True, exist_ok=True)
     path = cfg.exports_dir / f"arizalar{suffix}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
     wb.save(path)
     return path
@@ -97,6 +98,7 @@ def build_excel(rows, status_filter: str | None = None) -> Path:
 
 def build_zip(rows, max_bytes: int = 45 * 1024 * 1024) -> tuple[Path, int, int]:
     """Suratlarni ZIP arxivga yig'adi. (arxiv, qo'shilgan, tashlab ketilgan) qaytaradi."""
+    cfg.exports_dir.mkdir(parents=True, exist_ok=True)
     path = cfg.exports_dir / f"fotosuratlar_{datetime.now():%Y%m%d_%H%M%S}.zip"
     added = skipped = 0
     total = 0

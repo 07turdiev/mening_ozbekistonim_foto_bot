@@ -5,6 +5,7 @@ Telegram serveriga ulanmaydi — faqat kod, baza va validatorlarni sinaydi.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 import tempfile
@@ -12,6 +13,10 @@ from pathlib import Path
 
 os.environ.setdefault("BOT_TOKEN", "000000:TEST")
 os.environ.setdefault("ADMIN_IDS", "1")
+
+# Sinov chog'ida ataylab yuzaga keltirilgan xatolar log'ga tushib,
+# natijani chalkashtirmasligi uchun
+logging.disable(logging.CRITICAL)
 
 OK, FAIL = "  [OK]  ", "  [XATO]"
 errors: list[str] = []

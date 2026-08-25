@@ -11,6 +11,13 @@ from PIL import Image, ExifTags
 
 from config import cfg
 
+# Fotosuratning yuqori o'lchami CHEKLANMAGAN - qancha katta bo'lsa, shuncha yaxshi.
+# Pillow standart holatda ~178 megapiksellik rasmni "decompression bomb" deb
+# rad etadi; bu yerda faqat sarlavha va EXIF o'qiladi (piksellar dekodlanmaydi),
+# shuning uchun chegarani olib tashlaymiz - aks holda haqiqiy yirik kadrlar
+# "fayl buzilgan" degan noto'g'ri xabar bilan qaytarilardi.
+Image.MAX_IMAGE_PIXELS = None
+
 ALLOWED_EXT = {".jpg", ".jpeg"}
 ALLOWED_MIME = {"image/jpeg", "image/jpg"}
 
@@ -117,11 +124,22 @@ def _read_exif(img: Image.Image) -> tuple[bool, str]:
     return True, "; ".join(parts)
 
 
+def oversize_hint(file_size: int) -> str:
+    """Hajm chegarasidan oshganda - piksel o'lchamini saqlab qolish maslahati bilan."""
+    return (
+        f"Fayl hajmi <b>{file_size / 1048576:.1f} MB</b> — ruxsat etilgan chegara "
+        f"<b>{cfg.max_file_mb} MB</b>.\n\n"
+        "<i>Piksel o‘lchamiga yuqori chegara yo‘q — surat qancha yirik bo‘lsa, shuncha yaxshi. "
+        "Faqat fayl hajmini kamaytirish kerak: rasmni tahrirlash dasturida "
+        "«Save as JPEG» qilib, sifatni 90–95% ga qo‘ying. O‘lcham o‘zgarmaydi, "
+        "hajm esa 2–3 barobar kichrayadi.</i>"
+    )
+
+
 def check_photo_file(path: Path, file_size: int) -> PhotoCheck:
     """Yuklab olingan faylni format, o'lcham va hajm bo'yicha tekshiradi."""
     if file_size > cfg.max_file_bytes:
-        return PhotoCheck(False, f"Fayl hajmi {file_size / 1048576:.1f} MB — "
-                                 f"ruxsat etilgan chegara {cfg.max_file_mb} MB.")
+        return PhotoCheck(False, oversize_hint(file_size))
     try:
         with Image.open(path) as img:
             fmt = (img.format or "").upper()
@@ -133,11 +151,19 @@ def check_photo_file(path: Path, file_size: int) -> PhotoCheck:
     if fmt not in {"JPEG", "MPO"}:
         return PhotoCheck(False, f"Fayl formati — {fmt or 'noma’lum'}. "
                                  "Tanlovga faqat <b>JPG / JPEG</b> qabul qilinadi.")
-    if width < cfg.min_width or height < cfg.min_height:
+    # O'lcham talabi kadr yo'nalishiga bog'liq emas: vertikal (portret) surat uchun
+    # 3000x2000 emas, 2000x3000 bo'ladi. Shuning uchun uzun va qisqa tomonlar
+    # alohida solishtiriladi.
+    long_side, short_side = max(width, height), min(width, height)
+    need_long, need_short = max(cfg.min_width, cfg.min_height), min(cfg.min_width, cfg.min_height)
+    if long_side < need_long or short_side < need_short:
         return PhotoCheck(
             False,
-            f"Fotosurat o‘lchami — <b>{width} × {height}</b> piksel. "
-            f"Talab qilinadigan eng kichik o‘lcham — <b>{cfg.min_width} × {cfg.min_height}</b> piksel.\n\n"
+            f"Fotosurat o‘lchami — <b>{width} × {height}</b> piksel.\n\n"
+            f"Talab: uzun tomoni kamida <b>{need_long}</b>, qisqa tomoni kamida "
+            f"<b>{need_short}</b> piksel bo‘lishi kerak "
+            f"(gorizontal kadr — {need_long} × {need_short}, "
+            f"vertikal kadr — {need_short} × {need_long}).\n\n"
             "<i>Eslatma: rasmni «Fayl» ko‘rinishida yuborganingizga ishonch hosil qiling — "
             "oddiy rasm sifatida yuborilganda Telegram uni siqib yuboradi.</i>",
             width, height,

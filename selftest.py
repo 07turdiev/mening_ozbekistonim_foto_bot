@@ -111,6 +111,47 @@ def main() -> int:
         assert not check_photo_file(png, png.stat().st_size).ok, "PNG rad etilishi kerak edi"
     check("O‘lcham, format va hash", v_photo)
 
+    def v_large():
+        from PIL import Image
+        from utils.validators import check_photo_file, oversize_hint
+        # Yuqori o'lcham chegarasi bo'lmasligi kerak
+        assert Image.MAX_IMAGE_PIXELS is None, \
+            "Pillow'ning megapiksel chegarasi yirik kadrlarni rad etadi"
+        tmp = Path(tempfile.mkdtemp()) / "large.jpg"
+        Image.new("RGB", (6000, 4000), "olive").save(tmp, "JPEG", quality=90)
+        res = check_photo_file(tmp, tmp.stat().st_size)
+        assert res.ok, f"yirik surat qabul qilinishi kerak edi: {res.error}"
+        assert (res.width, res.height) == (6000, 4000)
+        # Hajm chegarasi esa saqlanadi va maslahat beradi
+        res = check_photo_file(tmp, cfg.max_file_bytes + 1)
+        assert not res.ok and "Piksel o‘lchamiga yuqori chegara yo‘q" in res.error, \
+            "hajm oshganda maslahat ko‘rsatilmadi"
+        tmp.unlink()
+    check("Yirik o‘lcham cheklanmagan", v_large)
+
+    def v_orientation():
+        from PIL import Image
+        from utils.validators import check_photo_file
+        tmp = Path(tempfile.mkdtemp())
+
+        def probe(w, h):
+            p = tmp / f"{w}x{h}.jpg"
+            Image.new("RGB", (w, h), "purple").save(p, "JPEG", quality=85)
+            return check_photo_file(p, p.stat().st_size)
+
+        # Vertikal (portret) kadr - uzun tomoni 4000, qisqasi 2250 -> qabul
+        res = probe(2250, 4000)
+        assert res.ok, f"vertikal kadr rad etildi: {res.error}"
+        # Kvadrat kadr: 3000x3000 -> ikkala tomon ham yetarli
+        assert probe(3000, 3000).ok, "kvadrat kadr rad etilmasligi kerak"
+        # Uzun tomoni yetarli, qisqasi kam -> rad
+        res = probe(1500, 4000)
+        assert not res.ok, "qisqa tomoni kam kadr qabul qilinmasligi kerak"
+        assert "qisqa tomoni" in res.error, "xato matni tushuntirmayapti"
+        # Ikkala tomon ham kam -> rad
+        assert not probe(2000, 1500).ok, "kichik kadr qabul qilinmasligi kerak"
+    check("Vertikal va kvadrat kadrlar", v_orientation)
+
     print("\n=== 5. Ma’lumotlar bazasi ===")
 
     async def db_flow():
@@ -322,7 +363,7 @@ def main() -> int:
             state = FSMContext(storage=MemoryStorage(),
                                key=StorageKey(bot_id=1, chat_id=uid, user_id=uid))
 
-            # Qayta /start
+            # Qayta /start - bitta xabar, asosiy menyu bilan
             msg = FakeMsg(uid)
             await u.cmd_start(msg, state)
             user = await db.get_user(uid)
@@ -330,9 +371,20 @@ def main() -> int:
             assert user["phone"] == "+998901234567", "telefon o‘chib ketdi"
             assert user["agreed_at"], "rozilik o‘chib ketdi"
 
-            btns = [b.text for r in msg.markups[-1].inline_keyboard for b in r]
-            assert "📸 Fotosurat yuborish" in btns, f"qaytgan foydalanuvchi menyusi noto‘g‘ri: {btns}"
-            assert "✅ Ishtirok etaman" not in btns, "qayta ro‘yxatdan o‘tish taklif qilinmoqda"
+            assert len(msg.markups) == 1, f"ortiqcha xabar yuborildi ({len(msg.markups)} ta)"
+            markup = msg.markups[-1]
+            assert hasattr(markup, "keyboard"), "qaytgan foydalanuvchi asosiy menyuni olishi kerak"
+            btns = [b.text for r in markup.keyboard for b in r]
+            assert kb.BTN_SEND in btns and kb.BTN_MY in btns, f"asosiy menyu to‘liq emas: {btns}"
+
+            # Yangi foydalanuvchi esa pastki menyusiz, inline tugmalar bilan
+            new_msg = FakeMsg(1000)
+            await u.cmd_start(new_msg, state)
+            assert len(new_msg.markups) == 1, "yangi foydalanuvchiga ham bitta xabar"
+            assert hasattr(new_msg.markups[-1], "inline_keyboard"), \
+                "yangi foydalanuvchida pastki menyu ko‘rinmasligi kerak"
+            new_btns = [b.text for r in new_msg.markups[-1].inline_keyboard for b in r]
+            assert "✅ Ishtirok etaman" in new_btns, f"inline menyu noto‘g‘ri: {new_btns}"
 
             # «Fotosurat yuborish» bosilganda darrov surat kutilishi kerak
             msg2 = FakeMsg(uid)
@@ -343,6 +395,65 @@ def main() -> int:
             object.__setattr__(cfg, "db_path", db_backup)
 
     check("Ma’lumotlar saqlanadi, qayta so‘ralmaydi", lambda: asyncio.run(restart_flow()))
+
+    print("\n=== 9. Yuklab olishda uzilish ===")
+
+    async def download_retry():
+        import handlers.user as u
+
+        class FakeStatus:
+            def __init__(self):
+                self.texts: list[str] = []
+
+            async def edit_text(self, text="", **kw):
+                self.texts.append(text)
+                return self
+
+        class FakeBot:
+            def __init__(self, fail_times: int):
+                self.fail_times = fail_times
+                self.calls = 0
+                self.timeouts: list[int] = []
+
+            async def download(self, doc, destination=None, timeout=None, **kw):
+                self.calls += 1
+                self.timeouts.append(timeout)
+                Path(destination).write_bytes(b"yarim")  # yarim yuklangan fayl
+                if self.calls <= self.fail_times:
+                    raise asyncio.TimeoutError()
+                Path(destination).write_bytes(b"toliq")
+
+        tmp = Path(tempfile.mkdtemp()) / "x.jpg"
+        sleep_real = asyncio.sleep
+
+        async def no_sleep(*a, **kw):
+            return None
+
+        asyncio.sleep = no_sleep
+        try:
+            # 2 marta uzilib, 3-urinishda muvaffaqiyat
+            bot = FakeBot(fail_times=2)
+            st = FakeStatus()
+            assert await u.download_with_retry(bot, object(), tmp, st) is True, \
+                "3-urinishda muvaffaqiyat kutilgan edi"
+            assert bot.calls == 3, f"{bot.calls} marta urinildi, 3 kutilgan"
+            assert bot.timeouts[0] == cfg.download_timeout, \
+                f"timeout uzatilmadi: {bot.timeouts[0]}"
+            assert tmp.read_bytes() == b"toliq", "fayl to‘liq yozilmadi"
+
+            # Hamma urinish uzilsa - False va yarim fayl qolmasligi kerak
+            bot = FakeBot(fail_times=99)
+            st = FakeStatus()
+            assert await u.download_with_retry(bot, object(), tmp, st) is False, \
+                "uzluksiz xatoda False qaytishi kerak"
+            assert bot.calls == cfg.download_retries, \
+                f"{bot.calls} marta urinildi, {cfg.download_retries} kutilgan"
+            assert not tmp.exists(), "yarim yuklangan fayl o‘chirilmadi"
+            assert "internet aloqasi" in st.texts[-1], "foydalanuvchiga tushunarli xabar yo‘q"
+        finally:
+            asyncio.sleep = sleep_real
+
+    check("Qayta urinish + yarim faylni tozalash", lambda: asyncio.run(download_retry()))
 
     print("\n" + "=" * 46)
     if errors:

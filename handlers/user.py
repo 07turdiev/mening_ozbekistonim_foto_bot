@@ -6,7 +6,8 @@ import logging
 from pathlib import Path
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+from aiohttp import ClientError
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -17,8 +18,9 @@ import keyboards as kb
 import texts as t
 from config import cfg
 from utils.validators import (
-    ALLOWED_EXT, ALLOWED_MIME, check_photo_file, safe_name, validate_description,
-    validate_fio, validate_phone, validate_place, validate_shot_date, validate_title,
+    ALLOWED_EXT, ALLOWED_MIME, check_photo_file, oversize_hint, safe_name,
+    validate_description, validate_fio, validate_phone, validate_place,
+    validate_shot_date, validate_title,
 )
 
 router = Router(name="user")
@@ -133,14 +135,18 @@ async def start_submission(message: Message, state: FSMContext) -> None:
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id
+    _cleanup_files(await state.get_data())  # yarim qolgan fayllarni tozalaymiz
     await state.clear()
-    await db.upsert_user(message.from_user.id, message.from_user.username)
-    # Boshlanishida pastki menyu ko'rsatilmaydi - faqat e'lon va inline tugmalar
-    await message.answer(t.WELCOME, reply_markup=kb.REMOVE)
-    await message.answer(
-        "Quyidagi amallardan birini tanlang:",
-        reply_markup=kb.start_kb(await db.is_registered(message.from_user.id)),
-    )
+    await db.upsert_user(user_id, message.from_user.username)
+
+    if await db.is_registered(user_id):
+        # Qaytgan foydalanuvchi - to'g'ridan-to'g'ri asosiy menyu
+        await message.answer(t.WELCOME, reply_markup=kb.main_menu(cfg.is_admin(user_id)))
+        return
+
+    # Yangi foydalanuvchi - pastki menyusiz, faqat inline tugmalar
+    await message.answer(t.WELCOME, reply_markup=kb.start_kb())
 
 
 @router.message(Command("help"))
@@ -383,6 +389,51 @@ async def reject_compressed(message: Message) -> None:
     )
 
 
+async def download_with_retry(bot: Bot, doc, tmp_path: Path, status: Message) -> bool:
+    """Faylni yuklab oladi. Sekin aloqada uzilib qolsa qayta uriniladi."""
+    for attempt in range(1, cfg.download_retries + 1):
+        try:
+            await bot.download(doc, destination=tmp_path, timeout=cfg.download_timeout)
+            return True
+        except TelegramBadRequest as exc:
+            log.warning("Yuklab olishda xato: %s", exc)
+            tmp_path.unlink(missing_ok=True)
+            await status.edit_text(
+                "⚠️ Faylni yuklab bo‘lmadi — hajmi juda katta bo‘lishi mumkin.\n"
+                f"Iltimos, {cfg.max_file_mb} MB dan kichik fayl yuboring."
+            )
+            return False
+        except (asyncio.TimeoutError, TelegramNetworkError, ClientError, OSError) as exc:
+            # Aloqa uzildi yoki sekin - yarim yuklangan faylni tashlab, qayta urinamiz
+            log.warning("Yuklab olish uzildi (%s/%s): %r",
+                        attempt, cfg.download_retries, exc)
+            tmp_path.unlink(missing_ok=True)
+            if attempt < cfg.download_retries:
+                try:
+                    await status.edit_text(
+                        f"⏳ Aloqa sekin, qayta urinilmoqda... "
+                        f"({attempt + 1}/{cfg.download_retries})"
+                    )
+                except TelegramBadRequest:
+                    pass
+                await asyncio.sleep(2 * attempt)
+                continue
+            await status.edit_text(
+                "⚠️ <b>Fotosuratni yuklab bo‘lmadi</b> — internet aloqasi uzilib qoldi.\n\n"
+                "Iltimos, aloqa barqaror bo‘lganda faylni qaytadan yuboring. "
+                "Wi-Fi ga ulanib ko‘rish tavsiya etiladi."
+            )
+            return False
+        except Exception as exc:
+            log.exception("Yuklab olishda kutilmagan xato: %r", exc)
+            tmp_path.unlink(missing_ok=True)
+            await status.edit_text(
+                "⚠️ Texnik xatolik yuz berdi. Iltimos, qaytadan urinib ko‘ring."
+            )
+            return False
+    return False
+
+
 async def process_document(message: Message, bot: Bot, known_hashes: set[str]) -> dict | None:
     """Faylni tekshiradi va yuklab oladi. Xato bo'lsa foydalanuvchiga javob berib None qaytaradi."""
     doc = message.document
@@ -398,10 +449,7 @@ async def process_document(message: Message, bot: Bot, known_hashes: set[str]) -
 
     if (doc.file_size or 0) > cfg.max_file_bytes:
         await message.answer(
-            f"⚠️ <b>{doc.file_name or 'Fayl'}</b> — hajmi "
-            f"<b>{doc.file_size / 1048576:.1f} MB</b>, ruxsat etilgan chegara "
-            f"<b>{cfg.max_file_mb} MB</b>.\n\n"
-            "Suratni biroz siqib (o‘lchamini kamaytirmasdan) qayta yuboring."
+            f"⚠️ <b>{doc.file_name or 'Fayl'}</b>\n\n" + oversize_hint(doc.file_size)
         )
         return None
 
@@ -410,18 +458,7 @@ async def process_document(message: Message, bot: Bot, known_hashes: set[str]) -
     tmp_path = tmp_dir / f"{message.from_user.id}_{doc.file_unique_id}.jpg"
 
     status = await message.answer("⏳ Fotosurat yuklanmoqda va tekshirilmoqda...")
-    try:
-        await bot.download(doc, destination=tmp_path)
-    except TelegramBadRequest as exc:
-        log.warning("Yuklab olishda xato: %s", exc)
-        await status.edit_text(
-            "⚠️ Faylni yuklab bo‘lmadi — hajmi juda katta bo‘lishi mumkin.\n"
-            f"Iltimos, {cfg.max_file_mb} MB dan kichik fayl yuboring."
-        )
-        return None
-    except Exception as exc:
-        log.exception("Yuklab olishda kutilmagan xato: %s", exc)
-        await status.edit_text("⚠️ Texnik xatolik yuz berdi. Iltimos, qaytadan urinib ko‘ring.")
+    if not await download_with_retry(bot, doc, tmp_path, status):
         return None
 
     file_size = doc.file_size or tmp_path.stat().st_size

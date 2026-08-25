@@ -30,7 +30,8 @@ fototanloviga arizalarni qabul qilish, tekshirish va yig‘ish uchun mo‘ljalla
 
 | Bosqich | Tavsif |
 |---|---|
-| `/start` | Tanlov e’loni. Pastki menyu ko‘rsatilmaydi — faqat inline tugmalar |
+| `/start` (yangi) | Tanlov e’loni + inline tugmalar. Pastki menyu ko‘rsatilmaydi |
+| `/start` (qaytgan) | Tanlov e’loni + **asosiy menyu**. Ma’lumotlar qayta so‘ralmaydi |
 | Rozilik | Mualliflik va ma’lumotlardan foydalanishga rozilik tasdiqlanadi |
 | Ro‘yxatdan o‘tish | F.I.Sh. + telefon raqami (tugma orqali yoki qo‘lda) |
 | Fotosurat | **Fayl (hujjat)** ko‘rinishida yuboriladi — siqilgan rasm rad etiladi |
@@ -87,6 +88,8 @@ fototanloviga arizalarni qabul qilish, tekshirish va yig‘ish uchun mo‘ljalla
 | `MAX_PHOTOS` | Bir ishtirokchidan ishlar soni | 3 |
 | `MIN_WIDTH` / `MIN_HEIGHT` | Eng kichik o‘lcham, piksel | 3000 / 2000 |
 | `MAX_FILE_MB` | Fayl hajmi chegarasi | 20 |
+| `DOWNLOAD_TIMEOUT` | Fayl yuklab olish uchun vaqt, soniya | 300 |
+| `DOWNLOAD_RETRIES` | Aloqa uzilganda qayta urinishlar soni | 3 |
 | `MODERATION` | `1` — adminlar tasdiqlaydi, `0` — avtomatik qabul | 1 |
 | `CHANNEL_ID`, `CHANNEL_URL` | Majburiy obuna kanali (ixtiyoriy) | bo‘sh |
 | `ARCHIVE_CHAT_ID` | Har bir ariza nusxasi yuboriladigan yopiq kanal | bo‘sh |
@@ -95,6 +98,10 @@ fototanloviga arizalarni qabul qilish, tekshirish va yig‘ish uchun mo‘ljalla
 
 > **Majburiy obuna** kerak bo‘lsa: botni kanalga administrator qilib qo‘shing va
 > `CHANNEL_ID=@kanal_nomi`, `CHANNEL_URL=https://t.me/kanal_nomi` deb yozing.
+
+> **Sekin internet.** aiogram'ning standart yuklab olish chegarasi atigi 30 soniya —
+> 20 MB fayl ulgurmay `TimeoutError` beradi. Shuning uchun `DOWNLOAD_TIMEOUT=300` qilingan
+> va aloqa uzilsa bot `DOWNLOAD_RETRIES` marta qayta urinadi (yarim yuklangan fayl o‘chiriladi).
 
 > **20 MB chegarasi** Telegram Bot API ning fayl yuklab olish chegarasi bilan mos.
 > Undan kattaroq fayllar kerak bo‘lsa, lokal Bot API server o‘rnatish talab qilinadi.

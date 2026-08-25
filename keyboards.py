@@ -46,14 +46,10 @@ def phone_kb() -> ReplyKeyboardMarkup:
     )
 
 
-def start_kb(registered: bool = False) -> InlineKeyboardMarkup:
+def start_kb() -> InlineKeyboardMarkup:
+    """Yangi foydalanuvchi uchun - ro'yxatdan o'tganlar asosiy menyuni oladi."""
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(
-        text="📸 Fotosurat yuborish" if registered else "✅ Ishtirok etaman",
-        callback_data="join",
-    ))
-    if registered:
-        kb.row(InlineKeyboardButton(text="🖼 Mening ishlarim", callback_data="my_works"))
+    kb.row(InlineKeyboardButton(text="✅ Ishtirok etaman", callback_data="join"))
     kb.row(InlineKeyboardButton(text="📋 Tanlov shartlari", callback_data="rules"))
     return kb.as_markup()
 

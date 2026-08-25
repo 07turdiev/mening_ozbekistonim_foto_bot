@@ -33,6 +33,10 @@ class Config:
     min_height: int = int(os.getenv("MIN_HEIGHT", "2000"))
     max_file_mb: int = int(os.getenv("MAX_FILE_MB", "20"))
 
+    # Sekin internetda 20 MB fayl aiogram'ning standart 30 soniyasiga ulgurmaydi
+    download_timeout: int = int(os.getenv("DOWNLOAD_TIMEOUT", "300"))
+    download_retries: int = int(os.getenv("DOWNLOAD_RETRIES", "3"))
+
     channel_id: str = os.getenv("CHANNEL_ID", "").strip()
     channel_url: str = os.getenv("CHANNEL_URL", "").strip()
     archive_chat_id: str = os.getenv("ARCHIVE_CHAT_ID", "").strip()

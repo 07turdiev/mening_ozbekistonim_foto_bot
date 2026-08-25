@@ -1,0 +1,12 @@
+@echo off
+chcp 65001 >nul
+cd /d "%~dp0"
+if not exist ".venv\Scripts\python.exe" (
+    echo [1/2] Virtual muhit yaratilmoqda...
+    py -m venv .venv
+    .venv\Scripts\python.exe -m pip install -q --upgrade pip
+    .venv\Scripts\python.exe -m pip install -q -r requirements.txt
+)
+echo Bot ishga tushirilmoqda... (to'xtatish uchun Ctrl+C)
+.venv\Scripts\python.exe bot.py
+pause

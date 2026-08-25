@@ -466,6 +466,84 @@ def main() -> int:
 
     check("Qayta urinish + yarim faylni tozalash", lambda: asyncio.run(download_retry()))
 
+    print("\n=== 10. Tanlov boshlanmagan holat ===")
+
+    async def closed_flow():
+        from types import SimpleNamespace
+        from aiogram.fsm.context import FSMContext
+        from aiogram.fsm.storage.base import StorageKey
+        from aiogram.fsm.storage.memory import MemoryStorage
+        import handlers.user as u
+        import keyboards as kb
+
+        class FakeMsg:
+            def __init__(self, uid):
+                self.from_user = SimpleNamespace(id=uid, username="yangi")
+                self.chat = SimpleNamespace(id=uid)
+                self.texts: list[str] = []
+                self.markups: list = []
+
+            async def answer(self, text="", **kw):
+                self.texts.append(text)
+                self.markups.append(kw.get("reply_markup"))
+                return self
+
+        def buttons(markup):
+            if markup is None:
+                return []
+            rows = getattr(markup, "keyboard", None) or getattr(markup, "inline_keyboard", [])
+            return [b.text for r in rows for b in r]
+
+        db_backup, tm_backup = cfg.db_path, cfg.test_mode
+        object.__setattr__(cfg, "db_path", Path(tempfile.mkdtemp()) / "closed.db")
+        object.__setattr__(cfg, "test_mode", False)   # muddat tekshirilsin
+        try:
+            await db.init_db()
+            assert not cfg.is_open(), "sinov uchun qabul yopiq bo‘lishi kerak edi"
+
+            state = FSMContext(storage=MemoryStorage(),
+                               key=StorageKey(bot_id=1, chat_id=1, user_id=1))
+
+            # /start - yangi foydalanuvchi
+            msg = FakeMsg(1)
+            await u.cmd_start(msg, state)
+            assert "hali boshlanmadi" in msg.texts[0] or "yakunlandi" in msg.texts[0], \
+                "ogohlantirish /start da ko‘rsatilmadi"
+            all_btns = [b for m in msg.markups for b in buttons(m)]
+            assert "✅ Ishtirok etaman" not in all_btns, "ro‘yxatdan o‘tish taklif qilinmoqda"
+            assert kb.BTN_SEND not in all_btns, "surat yuborish tugmasi ko‘rinib turibdi"
+
+            # «Fotosurat yuborish» yo‘lini majburan bosib ko‘rish ham ish bermasligi kerak
+            msg2 = FakeMsg(1)
+            await u.route_join(msg2, state, None, 1, "yangi")
+            assert await state.get_state() is None, "yopiq holatda ro‘yxatga yuborildi"
+
+            # /profil orqali ham ro‘yxat ma'lumotlari o‘zgartirilmasin
+            msg3 = FakeMsg(1)
+            await u.edit_profile(msg3, state)
+            assert await state.get_state() is None, "/profil ro‘yxatga kiritib yubordi"
+
+            # Ro‘yxatdan o‘tgan foydalanuvchi menyusida ham yuborish tugmasi bo‘lmasin
+            await db.upsert_user(2, "eski")
+            await db.save_profile(2, "Aliyev Sardor", "+998901234567")
+            msg4 = FakeMsg(2)
+            await u.cmd_start(msg4, state)
+            btns = buttons(msg4.markups[-1])
+            assert kb.BTN_SEND not in btns, f"yopiq holatda menyuda yuborish bor: {btns}"
+            assert kb.BTN_MY in btns, "«Mening ishlarim» qolishi kerak"
+
+            # Qabul ochilganda tugma qaytishi kerak
+            object.__setattr__(cfg, "test_mode", True)
+            msg5 = FakeMsg(2)
+            await u.cmd_start(msg5, state)
+            assert kb.BTN_SEND in buttons(msg5.markups[-1]), \
+                "qabul ochilganda yuborish tugmasi qaytmadi"
+        finally:
+            object.__setattr__(cfg, "db_path", db_backup)
+            object.__setattr__(cfg, "test_mode", tm_backup)
+
+    check("Yopiq holatda ro‘yxat va yuborish berk", lambda: asyncio.run(closed_flow()))
+
     print("\n" + "=" * 46)
     if errors:
         print(f"XATOLIKLAR: {len(errors)} ta")

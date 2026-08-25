@@ -71,6 +71,11 @@ async def acceptance_blocked() -> str | None:
     return None
 
 
+async def main_kb(user_id: int):
+    """Asosiy menyu. Qabul yopiq bo'lsa «Fotosurat yuborish» tugmasisiz."""
+    return kb.main_menu(cfg.is_admin(user_id), can_submit=await acceptance_blocked() is None)
+
+
 def photo_card(data: dict, fio: str, phone: str) -> str:
     return (
         "\U0001F50E <b>Ma’lumotlarni tekshiring</b>\n\n"
@@ -121,7 +126,7 @@ async def start_submission(message: Message, state: FSMContext) -> None:
     used = await db.count_active_photos(user_id)
     if used >= cfg.max_photos:
         await state.clear()
-        await message.answer(t.LIMIT_REACHED, reply_markup=kb.main_menu(cfg.is_admin(user_id)))
+        await message.answer(t.LIMIT_REACHED, reply_markup=await main_kb(user_id))
         return
     await state.set_data({})  # oldingi ishdan qolgan ma'lumotlarni tozalaymiz
     await state.set_state(Submit.photo)
@@ -140,9 +145,25 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     await db.upsert_user(user_id, message.from_user.username)
 
-    if await db.is_registered(user_id):
+    blocked = await acceptance_blocked()
+    registered = await db.is_registered(user_id)
+
+    if blocked:
+        # Qabul yopiq - ro'yxatdan o'tish ham, surat yuborish ham taklif qilinmaydi
+        text = f"{t.WELCOME}\n\n➖➖➖➖➖➖➖➖➖➖\n\n{blocked}"
+        if registered:
+            await message.answer(text, reply_markup=await main_kb(user_id))
+        else:
+            await message.answer(text, reply_markup=kb.REMOVE)
+            await message.answer(
+                f"☎️ <b>Murojaat uchun:</b> {cfg.contact_info}",
+                reply_markup=kb.closed_kb(),
+            )
+        return
+
+    if registered:
         # Qaytgan foydalanuvchi - to'g'ridan-to'g'ri asosiy menyu
-        await message.answer(t.WELCOME, reply_markup=kb.main_menu(cfg.is_admin(user_id)))
+        await message.answer(t.WELCOME, reply_markup=await main_kb(user_id))
         return
 
     # Yangi foydalanuvchi - pastki menyusiz, faqat inline tugmalar
@@ -152,7 +173,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 @router.message(Command("help"))
 @router.message(F.text == kb.BTN_RULES)
 async def show_rules(message: Message) -> None:
-    await message.answer(t.RULES, reply_markup=kb.main_menu(cfg.is_admin(message.from_user.id)))
+    await message.answer(t.RULES, reply_markup=await main_kb(message.from_user.id))
 
 
 @router.callback_query(F.data == "rules")
@@ -171,7 +192,7 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         t.CANCELLED if pending else t.FINISHED,
-        reply_markup=kb.main_menu(cfg.is_admin(message.from_user.id)),
+        reply_markup=await main_kb(message.from_user.id),
     )
 
 
@@ -203,6 +224,11 @@ async def show_profile(message: Message) -> None:
 
 @router.message(Command("profil"))
 async def edit_profile(message: Message, state: FSMContext) -> None:
+    blocked = await acceptance_blocked()
+    if blocked:
+        # Qabul yopiq bo'lsa ro'yxat ma'lumotlari ham o'zgartirilmaydi
+        await message.answer(blocked, reply_markup=await main_kb(message.from_user.id))
+        return
     await state.set_state(Reg.fio)
     await state.update_data(after="menu")
     await message.answer(t.ASK_FIO, reply_markup=kb.cancel_kb())
@@ -269,7 +295,7 @@ async def route_join(message: Message, state: FSMContext, bot: Bot,
 
     blocked = await acceptance_blocked()
     if blocked:
-        await message.answer(blocked, reply_markup=kb.main_menu(cfg.is_admin(user_id)))
+        await message.answer(blocked, reply_markup=await main_kb(user_id))
         return
 
     if not await is_subscribed(bot, user_id):
@@ -341,7 +367,7 @@ async def finish_registration(message: Message, state: FSMContext, raw_phone: st
     await state.clear()
     await message.answer(
         f"✅ Ma’lumotlaringiz saqlandi.\n\n\U0001F464 {data['fio']}\n☎️ {phone}",
-        reply_markup=kb.main_menu(cfg.is_admin(message.from_user.id)),
+        reply_markup=await main_kb(message.from_user.id),
     )
     if after == "menu":
         return
@@ -617,7 +643,7 @@ async def cb_submit_cancel(call: CallbackQuery, state: FSMContext) -> None:
     _cleanup_files(data)
     await state.clear()
     await call.answer("Bekor qilindi")
-    await call.message.answer(t.CANCELLED, reply_markup=kb.main_menu(cfg.is_admin(call.from_user.id)))
+    await call.message.answer(t.CANCELLED, reply_markup=await main_kb(call.from_user.id))
 
 
 @router.callback_query(Submit.confirm, F.data == "submit_ok")
@@ -627,18 +653,18 @@ async def cb_submit_ok(call: CallbackQuery, state: FSMContext, bot: Bot) -> None
     data = await state.get_data()
     if not data.get("file_id"):
         await state.clear()
-        await call.message.answer(t.CANCELLED, reply_markup=kb.main_menu(cfg.is_admin(user_id)))
+        await call.message.answer(t.CANCELLED, reply_markup=await main_kb(user_id))
         return
 
     blocked = await acceptance_blocked()
     if blocked:
         await state.clear()
-        await call.message.answer(blocked, reply_markup=kb.main_menu(cfg.is_admin(user_id)))
+        await call.message.answer(blocked, reply_markup=await main_kb(user_id))
         return
 
     if await db.count_active_photos(user_id) >= cfg.max_photos:
         await state.clear()
-        await call.message.answer(t.LIMIT_REACHED, reply_markup=kb.main_menu(cfg.is_admin(user_id)))
+        await call.message.answer(t.LIMIT_REACHED, reply_markup=await main_kb(user_id))
         return
 
     status = "pending" if cfg.moderation else "approved"
@@ -723,7 +749,7 @@ async def cb_submit_ok(call: CallbackQuery, state: FSMContext, bot: Bot) -> None
     await state.clear()
     await call.message.answer(
         "Omad tilaymiz! \U0001F1FA\U0001F1FF",
-        reply_markup=kb.main_menu(cfg.is_admin(user_id)),
+        reply_markup=await main_kb(user_id),
     )
     await call.message.answer("Keyingi amal:", reply_markup=kb.after_submit_kb(False))
 
@@ -732,4 +758,4 @@ async def cb_submit_ok(call: CallbackQuery, state: FSMContext, bot: Bot) -> None
 
 @router.message(StateFilter(None))
 async def fallback(message: Message) -> None:
-    await message.answer(t.UNKNOWN, reply_markup=kb.main_menu(cfg.is_admin(message.from_user.id)))
+    await message.answer(t.UNKNOWN, reply_markup=await main_kb(message.from_user.id))

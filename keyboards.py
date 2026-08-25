@@ -20,9 +20,11 @@ BTN_ADMIN = "🛠 Admin panel"
 REMOVE = ReplyKeyboardRemove()
 
 
-def main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
+def main_menu(is_admin: bool = False, can_submit: bool = True) -> ReplyKeyboardMarkup:
+    """Qabul yopiq bo'lsa «Fotosurat yuborish» tugmasi ko'rsatilmaydi."""
     kb = ReplyKeyboardBuilder()
-    kb.row(KeyboardButton(text=BTN_SEND))
+    if can_submit:
+        kb.row(KeyboardButton(text=BTN_SEND))
     kb.row(KeyboardButton(text=BTN_MY), KeyboardButton(text=BTN_RULES))
     kb.row(KeyboardButton(text=BTN_PROFILE), KeyboardButton(text=BTN_CONTACT))
     if is_admin:
@@ -44,6 +46,13 @@ def phone_kb() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
+
+
+def closed_kb() -> InlineKeyboardMarkup:
+    """Qabul yopiq - faqat ma'lumot tugmasi qoladi."""
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="📋 Tanlov shartlari", callback_data="rules"))
+    return kb.as_markup()
 
 
 def start_kb() -> InlineKeyboardMarkup:

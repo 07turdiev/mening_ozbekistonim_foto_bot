@@ -46,9 +46,14 @@ def phone_kb() -> ReplyKeyboardMarkup:
     )
 
 
-def start_kb() -> InlineKeyboardMarkup:
+def start_kb(registered: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="✅ Ishtirok etaman", callback_data="join"))
+    kb.row(InlineKeyboardButton(
+        text="📸 Fotosurat yuborish" if registered else "✅ Ishtirok etaman",
+        callback_data="join",
+    ))
+    if registered:
+        kb.row(InlineKeyboardButton(text="🖼 Mening ishlarim", callback_data="my_works"))
     kb.row(InlineKeyboardButton(text="📋 Tanlov shartlari", callback_data="rules"))
     return kb.as_markup()
 
@@ -102,16 +107,21 @@ def admin_menu() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def moderation_kb(photo_id: int, index: int) -> InlineKeyboardMarkup:
+def moderation_kb(photo_id: int, index: int, total: int = 1) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(
         InlineKeyboardButton(text="✅ Qabul qilish", callback_data=f"a:ok:{photo_id}:{index}"),
         InlineKeyboardButton(text="❌ Rad etish", callback_data=f"a:no:{photo_id}:{index}"),
     )
-    kb.row(
-        InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"a:mod:{max(index - 1, 0)}"),
-        InlineKeyboardButton(text="➡️ Keyingi", callback_data=f"a:mod:{index + 1}"),
-    )
+    # Navigatsiya faqat navbatda bir nechta ariza bo‘lganda kerak
+    if total > 1:
+        nav = []
+        if index > 0:
+            nav.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"a:mod:{index - 1}"))
+        if index < total - 1:
+            nav.append(InlineKeyboardButton(text="➡️ Keyingi", callback_data=f"a:mod:{index + 1}"))
+        if nav:
+            kb.row(*nav)
     kb.row(InlineKeyboardButton(text=BTN_ADMIN, callback_data="a:menu"))
     return kb.as_markup()
 

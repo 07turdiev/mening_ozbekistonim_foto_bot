@@ -98,7 +98,16 @@ HOW_TO_SEND = (
     "• format — JPG / JPEG\n"
     f"• o‘lcham — kamida {cfg.min_width} × {cfg.min_height} piksel\n"
     f"• hajmi — {cfg.max_file_mb} MB dan oshmasligi\n\n"
+    f"💡 Bir vaqtning o‘zida <b>{cfg.max_photos} tagacha</b> faylni birdan belgilab yuborishingiz "
+    "mumkin — bot ularni navbat bilan qabul qiladi va har biri uchun ma’lumot so‘raydi.\n\n"
     "Endi fotosuratni yuboring 👇"
+)
+
+NEXT_PHOTO = (
+    "📸 <b>Keyingi fotosurat</b>\n\n"
+    "Yana ish yubormoqchi bo‘lsangiz, suratni <b>fayl</b> ko‘rinishida yuboring "
+    "(bir nechtasini birdan belgilash mumkin).\n\n"
+    "Yakunlash uchun «❌ Bekor qilish» tugmasini bosing — yuborilgan ishlaringiz saqlanib qoladi."
 )
 
 ASK_TITLE = "🏷 <b>1/4. Fotosurat nomi</b>\n\nAsaringizga nom bering.\n<i>Masalan: “Registon tongi”</i>"
@@ -128,6 +137,7 @@ LIMIT_REACHED = (
 )
 
 CANCELLED = "❌ Bekor qilindi."
+FINISHED = "✅ Yakunlandi. Yuborilgan ishlaringiz «🖼 Mening ishlarim» bo‘limida saqlanib qoldi."
 UNKNOWN = "Iltimos, pastdagi menyu tugmalaridan foydalaning 👇"
 
 

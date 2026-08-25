@@ -35,8 +35,12 @@ class AdminState(StatesGroup):
 
 
 def _panel_text() -> str:
+    warn = (
+        "⚠️ <b>SINOV REJIMI YOQILGAN</b> (TEST_MODE=1) — tanlov muddati tekshirilmayapti!\n\n"
+        if cfg.test_mode else ""
+    )
     return (
-        "\U0001F6E0 <b>Administrator paneli</b>\n\n"
+        warn + "\U0001F6E0 <b>Administrator paneli</b>\n\n"
         f"Tanlov muddati: <b>{cfg.start_date:%d.%m.%Y} — {cfg.end_date:%d.%m.%Y}</b>\n"
         f"Bugun: {cfg.today():%d.%m.%Y}\n"
         f"Moderatsiya: <b>{'yoqilgan' if cfg.moderation else 'o‘chirilgan'}</b>\n\n"
@@ -45,7 +49,7 @@ def _panel_text() -> str:
 
 
 @router.message(Command("admin"))
-@router.message(F.text == "\U0001F6E0 Admin panel")
+@router.message(F.text == kb.BTN_ADMIN)
 async def admin_panel(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(_panel_text(), reply_markup=kb.admin_menu())
@@ -98,26 +102,27 @@ async def _stats_text() -> str:
 
 # ------------------------------------------------------------------ moderatsiya
 
-@router.callback_query(F.data.startswith("a:mod:"))
-async def cb_moderate(call: CallbackQuery) -> None:
-    await call.answer()
-    index = max(int(call.data.split(":")[2]), 0)
+async def show_queue(message: Message, index: int = 0, note: str = "") -> None:
+    """Navbatdagi arizani ko'rsatadi. Navbat bo'sh bo'lsa - admin panelga qaytaradi."""
     total = await db.count_by_status("pending")
     if total == 0:
-        await call.message.answer(
-            "✅ Ko‘rib chiqilmagan arizalar yo‘q.", reply_markup=kb.back_admin_kb()
+        await message.answer(
+            (note + "\n\n" if note else "")
+            + "✅ <b>Ko‘rib chiqilmagan arizalar qolmadi.</b>\n\n" + _panel_text(),
+            reply_markup=kb.admin_menu(),
         )
         return
-    if index >= total:
-        index = total - 1
 
+    index = min(max(index, 0), total - 1)
     rows = await db.photos_by_status("pending", 1, index)
     if not rows:
-        await call.message.answer("Ariza topilmadi.", reply_markup=kb.back_admin_kb())
+        await message.answer(_panel_text(), reply_markup=kb.admin_menu())
         return
+
     r = rows[0]
     caption = (
-        f"\U0001F553 <b>Ariza #{r['id']}</b>  ({index + 1}/{total})\n\n"
+        (note + "\n\n" if note else "")
+        + f"\U0001F553 <b>Ariza #{r['id']}</b>  ({index + 1}/{total})\n\n"
         f"\U0001F464 {r['fio']}\n☎️ {r['phone']}\n"
         f"\U0001F194 <code>{r['user_id']}</code>"
         + (f" | @{r['username']}" if r["username"] else "") + "\n\n"
@@ -129,9 +134,16 @@ async def cb_moderate(call: CallbackQuery) -> None:
         + (f"\U0001F4F7 {r['exif_info']}\n" if r["exif_info"] else "")
         + f"\n✍️ {r['description']}"
     )
-    await call.message.answer_document(
-        r["file_id"], caption=t.clip(caption), reply_markup=kb.moderation_kb(r["id"], index)
+    await message.answer_document(
+        r["file_id"], caption=t.clip(caption),
+        reply_markup=kb.moderation_kb(r["id"], index, total),
     )
+
+
+@router.callback_query(F.data.startswith("a:mod:"))
+async def cb_moderate(call: CallbackQuery) -> None:
+    await call.answer()
+    await show_queue(call.message, int(call.data.split(":")[2]))
 
 
 @router.callback_query(F.data.startswith("a:ok:"))
@@ -151,9 +163,8 @@ async def cb_approve(call: CallbackQuery, bot: Bot) -> None:
         await call.message.edit_reply_markup(reply_markup=None)
     except TelegramBadRequest:
         pass
-    await call.message.answer(
-        f"✅ Ariza #{photo_id} qabul qilindi.", reply_markup=kb.moderation_kb(int(photo_id), int(index))
-    )
+    # Ariza navbatdan chiqdi - o'sha indeks endi keyingi arizani ko'rsatadi
+    await show_queue(call.message, int(index), f"✅ Ariza #{photo_id} qabul qilindi.")
     try:
         await bot.send_message(
             row["user_id"],
@@ -204,10 +215,7 @@ async def save_reject(message: Message, state: FSMContext, bot: Bot) -> None:
     row = await db.get_photo(photo_id)
     await db.set_status(photo_id, "rejected", message.from_user.id, reason)
     await state.clear()
-    await message.answer(
-        f"❌ Ariza #{photo_id} rad etildi.\nSabab: {reason}",
-        reply_markup=kb.moderation_kb(photo_id, index),
-    )
+    await show_queue(message, index, f"❌ Ariza #{photo_id} rad etildi.\nSabab: {reason}")
     if row:
         try:
             await bot.send_message(

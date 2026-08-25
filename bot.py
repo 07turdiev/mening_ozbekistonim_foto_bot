@@ -61,11 +61,14 @@ async def on_startup(bot: Bot) -> None:
     await set_commands(bot)
     me = await bot.get_me()
     logging.info("Bot ishga tushdi: @%s (id=%s)", me.username, me.id)
+    if cfg.test_mode:
+        logging.warning("SINOV REJIMI (TEST_MODE=1): tanlov muddati tekshirilmaydi!")
     for admin_id in cfg.admin_ids:
         try:
             await bot.send_message(
                 admin_id,
-                "♻️ Bot ishga tushdi.\n"
+                ("⚠️ <b>SINOV REJIMI</b> (TEST_MODE=1)\n\n" if cfg.test_mode else "")
+                + "♻️ Bot ishga tushdi.\n"
                 f"Tanlov muddati: <b>{cfg.start_date:%d.%m.%Y} — {cfg.end_date:%d.%m.%Y}</b>\n"
                 "Boshqaruv uchun /admin",
             )

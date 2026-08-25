@@ -39,6 +39,7 @@ class Config:
 
     contact_info: str = os.getenv("CONTACT_INFO", "—")
     moderation: bool = os.getenv("MODERATION", "1") == "1"
+    test_mode: bool = os.getenv("TEST_MODE", "0") == "1"
     tz_offset: int = int(os.getenv("TIMEZONE_OFFSET", "5"))
 
     db_path: Path = BASE_DIR / "contest.db"
@@ -60,11 +61,13 @@ class Config:
         return self.now().date()
 
     def is_open(self) -> bool:
-        """Tanlov qabul muddati davom etayaptimi."""
+        """Tanlov qabul muddati davom etayaptimi (TEST_MODE da doim ochiq)."""
+        if self.test_mode:
+            return True
         return self.start_date <= self.today() <= self.end_date
 
     def not_started(self) -> bool:
-        return self.today() < self.start_date
+        return not self.test_mode and self.today() < self.start_date
 
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_ids

@@ -1,6 +1,7 @@
 """Ishtirokchi uchun handlerlar."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -120,6 +121,7 @@ async def start_submission(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer(t.LIMIT_REACHED, reply_markup=kb.main_menu(cfg.is_admin(user_id)))
         return
+    await state.set_data({})  # oldingi ishdan qolgan ma'lumotlarni tozalaymiz
     await state.set_state(Submit.photo)
     await message.answer(
         f"{t.HOW_TO_SEND}\n\n<i>Yuborilgan ishlar: {used}/{cfg.max_photos}</i>",
@@ -133,8 +135,12 @@ async def start_submission(message: Message, state: FSMContext) -> None:
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     await db.upsert_user(message.from_user.id, message.from_user.username)
-    await message.answer(t.WELCOME, reply_markup=kb.main_menu(cfg.is_admin(message.from_user.id)))
-    await message.answer("Quyidagi amallardan birini tanlang:", reply_markup=kb.start_kb())
+    # Boshlanishida pastki menyu ko'rsatilmaydi - faqat e'lon va inline tugmalar
+    await message.answer(t.WELCOME, reply_markup=kb.REMOVE)
+    await message.answer(
+        "Quyidagi amallardan birini tanlang:",
+        reply_markup=kb.start_kb(await db.is_registered(message.from_user.id)),
+    )
 
 
 @router.message(Command("help"))
@@ -153,11 +159,14 @@ async def cb_rules(call: CallbackQuery) -> None:
 @router.message(F.text == kb.BTN_CANCEL)
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
-    tmp = data.get("tmp_path")
-    if tmp:
-        Path(tmp).unlink(missing_ok=True)
+    # Agar joriy ish boshlanmagan bo'lsa - bu "bekor qilish" emas, "yakunlash"
+    pending = bool(data.get("file_id") or data.get("queue"))
+    _cleanup_files(data)
     await state.clear()
-    await message.answer(t.CANCELLED, reply_markup=kb.main_menu(cfg.is_admin(message.from_user.id)))
+    await message.answer(
+        t.CANCELLED if pending else t.FINISHED,
+        reply_markup=kb.main_menu(cfg.is_admin(message.from_user.id)),
+    )
 
 
 @router.message(F.text == kb.BTN_CONTACT)
@@ -339,7 +348,31 @@ async def finish_registration(message: Message, state: FSMContext, raw_phone: st
 
 # -------------------------------------------------------------------- fotosurat
 
-@router.message(Submit.photo, F.photo)
+SUBMIT_STATES = StateFilter(
+    Submit.photo, Submit.title, Submit.place, Submit.shot_date,
+    Submit.description, Submit.confirm,
+)
+
+# Albom (bir nechta fayl birdan) yuborilganda Telegram har bir faylni alohida
+# update qilib jo'natadi. Ular parallel qayta ishlanmasligi uchun foydalanuvchi
+# bo'yicha qulf qo'yamiz - aks holda ikki surat bir-birining ustiga yozilib qoladi.
+_user_locks: dict[int, asyncio.Lock] = {}
+
+
+def _user_lock(user_id: int) -> asyncio.Lock:
+    return _user_locks.setdefault(user_id, asyncio.Lock())
+
+
+def _cleanup_files(data: dict) -> None:
+    """FSM ma'lumotidagi barcha vaqtinchalik fayllarni o'chiradi."""
+    if data.get("tmp_path"):
+        Path(data["tmp_path"]).unlink(missing_ok=True)
+    for item in data.get("queue", []):
+        if item.get("tmp_path"):
+            Path(item["tmp_path"]).unlink(missing_ok=True)
+
+
+@router.message(SUBMIT_STATES, F.photo)
 async def reject_compressed(message: Message) -> None:
     await message.answer(
         "⚠️ <b>Fotosurat siqilgan holda yuborildi.</b>\n\n"
@@ -350,26 +383,27 @@ async def reject_compressed(message: Message) -> None:
     )
 
 
-@router.message(Submit.photo, F.document)
-async def receive_document(message: Message, state: FSMContext, bot: Bot) -> None:
+async def process_document(message: Message, bot: Bot, known_hashes: set[str]) -> dict | None:
+    """Faylni tekshiradi va yuklab oladi. Xato bo'lsa foydalanuvchiga javob berib None qaytaradi."""
     doc = message.document
     ext = Path(doc.file_name or "").suffix.lower()
 
     if ext not in ALLOWED_EXT and (doc.mime_type or "") not in ALLOWED_MIME:
         await message.answer(
-            f"⚠️ Fayl formati mos emas "
+            f"⚠️ <b>{doc.file_name or 'Fayl'}</b> — format mos emas "
             f"(<code>{ext or doc.mime_type or 'noma’lum'}</code>).\n\n"
             "Tanlovga faqat <b>JPG / JPEG</b> formatidagi fotosuratlar qabul qilinadi."
         )
-        return
+        return None
 
     if (doc.file_size or 0) > cfg.max_file_bytes:
         await message.answer(
-            f"⚠️ Fayl hajmi <b>{doc.file_size / 1048576:.1f} MB</b> — "
-            f"ruxsat etilgan chegara <b>{cfg.max_file_mb} MB</b>.\n\n"
+            f"⚠️ <b>{doc.file_name or 'Fayl'}</b> — hajmi "
+            f"<b>{doc.file_size / 1048576:.1f} MB</b>, ruxsat etilgan chegara "
+            f"<b>{cfg.max_file_mb} MB</b>.\n\n"
             "Suratni biroz siqib (o‘lchamini kamaytirmasdan) qayta yuboring."
         )
-        return
+        return None
 
     tmp_dir = cfg.uploads_dir / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -384,22 +418,25 @@ async def receive_document(message: Message, state: FSMContext, bot: Bot) -> Non
             "⚠️ Faylni yuklab bo‘lmadi — hajmi juda katta bo‘lishi mumkin.\n"
             f"Iltimos, {cfg.max_file_mb} MB dan kichik fayl yuboring."
         )
-        return
+        return None
     except Exception as exc:
         log.exception("Yuklab olishda kutilmagan xato: %s", exc)
-        await status.edit_text(
-            "⚠️ Texnik xatolik yuz berdi. Iltimos, qaytadan urinib ko‘ring."
-        )
-        return
+        await status.edit_text("⚠️ Texnik xatolik yuz berdi. Iltimos, qaytadan urinib ko‘ring.")
+        return None
 
     file_size = doc.file_size or tmp_path.stat().st_size
     check = check_photo_file(tmp_path, file_size)
     if not check.ok:
         tmp_path.unlink(missing_ok=True)
+        await status.edit_text(f"⚠️ {check.error}")
+        return None
+
+    if check.file_hash in known_hashes:
+        tmp_path.unlink(missing_ok=True)
         await status.edit_text(
-            f"⚠️ {check.error}\n\nBoshqa fotosurat yuboring yoki bekor qiling."
+            "⚠️ Bu surat ushbu yuborishda allaqachon bor — takrori o‘tkazib yuborildi."
         )
-        return
+        return None
 
     dup = await db.find_duplicate(check.file_hash)
     if dup:
@@ -409,22 +446,64 @@ async def receive_document(message: Message, state: FSMContext, bot: Bot) -> Non
             f"⚠️ Ushbu fotosurat allaqachon tanlovga taqdim etilgan ({owner} tomonidan).\n\n"
             "Iltimos, boshqa ijodiy ishingizni yuboring."
         )
-        return
+        return None
 
-    await state.update_data(
-        file_id=doc.file_id, file_unique=doc.file_unique_id,
-        file_name=doc.file_name or tmp_path.name, tmp_path=str(tmp_path),
-        width=check.width, height=check.height, file_size=file_size,
-        has_exif=int(check.has_exif), exif_info=check.exif_info,
-        file_hash=check.file_hash,
-    )
     await status.edit_text(
-        f"✅ Fotosurat qabul qilindi.\n"
+        f"✅ <b>{doc.file_name or 'Fotosurat'}</b> qabul qilindi.\n"
         f"\U0001F4D0 O‘lcham: <b>{check.width} × {check.height}</b> px | "
         f"{file_size / 1048576:.1f} MB"
     )
-    await state.set_state(Submit.title)
-    await message.answer(t.ASK_TITLE, reply_markup=kb.cancel_kb())
+    return {
+        "file_id": doc.file_id, "file_unique": doc.file_unique_id,
+        "file_name": doc.file_name or tmp_path.name, "tmp_path": str(tmp_path),
+        "width": check.width, "height": check.height, "file_size": file_size,
+        "has_exif": int(check.has_exif), "exif_info": check.exif_info,
+        "file_hash": check.file_hash,
+    }
+
+
+@router.message(SUBMIT_STATES, F.document)
+async def handle_document(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Bitta fayl ham, albom ham shu yerda qabul qilinadi.
+
+    Birinchi surat joriy ish sifatida olinadi, qolganlari navbatga qo'yiladi va
+    joriy ish yakunlangach avtomatik ravishda navbatdan olinadi.
+    """
+    async with _user_lock(message.from_user.id):
+        data = await state.get_data()
+        queue: list[dict] = data.get("queue", [])
+        has_current = bool(data.get("file_id"))
+
+        used = await db.count_active_photos(message.from_user.id)
+        booked = used + int(has_current) + len(queue)
+        if booked >= cfg.max_photos:
+            await message.answer(
+                f"⚠️ Siz allaqachon <b>{cfg.max_photos} ta</b> ish uchun surat tayyorladingiz — "
+                "bu tanlovdagi eng ko‘p miqdor. Ushbu fayl qabul qilinmadi."
+            )
+            return
+
+        known = {i["file_hash"] for i in queue}
+        if data.get("file_hash"):
+            known.add(data["file_hash"])
+
+        item = await process_document(message, bot, known)
+        if not item:
+            return
+
+        if not has_current:
+            await state.update_data(**item)
+            await state.set_state(Submit.title)
+            await message.answer(t.ASK_TITLE, reply_markup=kb.cancel_kb())
+            return
+
+        queue.append(item)
+        await state.update_data(queue=queue)
+        await message.answer(
+            f"\U0001F4E5 Navbatga qo‘yildi (navbatda: <b>{len(queue)}</b> ta).\n"
+            "Avval joriy suratning ma’lumotlarini to‘ldiramiz, so‘ng avtomatik "
+            "keyingisiga o‘tamiz."
+        )
 
 
 @router.message(Submit.photo)
@@ -498,8 +577,7 @@ async def cb_redo(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(Submit.confirm, F.data == "submit_cancel")
 async def cb_submit_cancel(call: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-    if data.get("tmp_path"):
-        Path(data["tmp_path"]).unlink(missing_ok=True)
+    _cleanup_files(data)
     await state.clear()
     await call.answer("Bekor qilindi")
     await call.message.answer(t.CANCELLED, reply_markup=kb.main_menu(cfg.is_admin(call.from_user.id)))
@@ -556,9 +634,16 @@ async def cb_submit_ok(call: CallbackQuery, state: FSMContext, bot: Bot) -> None
         final_path = Path(data["tmp_path"])
     await db.execute("UPDATE photos SET file_path = ? WHERE id = ?", (str(final_path), photo_id))
 
-    await state.clear()
+    queue: list[dict] = data.get("queue", [])
     used = await db.count_active_photos(user_id)
     left = cfg.max_photos - used
+
+    # Navbatda kutayotgan suratlar limitga sig'masa - ularni tozalaymiz
+    if left <= 0 and queue:
+        for item in queue:
+            Path(item["tmp_path"]).unlink(missing_ok=True)
+        queue = []
+
     tail = (
         f"Siz yana <b>{left} ta</b> fotosurat yuborishingiz mumkin."
         if left > 0 else "Siz tanlov uchun barcha ishlaringizni yubordingiz."
@@ -567,11 +652,43 @@ async def cb_submit_ok(call: CallbackQuery, state: FSMContext, bot: Bot) -> None
         f"\U0001F389 <b>Rahmat! Ishingiz qabul qilindi.</b>\n\n"
         f"Ariza raqami: <b>#{photo_id}</b>\n"
         f"\U0001F3F7 {data['title']}\n"
-        f"Holati: {STATUS_UZ[status]}\n\n{tail}\n\nOmad tilaymiz! \U0001F1FA\U0001F1FF",
+        f"Holati: {STATUS_UZ[status]}\n\n{tail}"
+    )
+    await notify_admins(bot, photo_id)
+
+    if queue:
+        # Navbatdagi keyingi suratga avtomatik o'tamiz
+        nxt = queue.pop(0)
+        await state.set_data({**nxt, "queue": queue})
+        await state.set_state(Submit.title)
+        await call.message.answer_document(
+            nxt["file_id"],
+            caption=(
+                f"\U0001F4F8 <b>Navbatdagi surat</b> — {used + 1}/{cfg.max_photos}"
+                + (f" (navbatda yana {len(queue)} ta)" if queue else "")
+                + f"\n\U0001F4D0 {nxt['width']} × {nxt['height']} px"
+            ),
+        )
+        await call.message.answer(t.ASK_TITLE, reply_markup=kb.cancel_kb())
+        return
+
+    if left > 0:
+        # Darrov keyingi suratni kutamiz - qayta tugma bosish shart emas.
+        # set_data({}) shart: aks holda hozirgina yuborilgan ishning ma'lumotlari qolib ketadi.
+        await state.set_data({})
+        await state.set_state(Submit.photo)
+        await call.message.answer(
+            f"{t.NEXT_PHOTO}\n\n<i>Yuborilgan ishlar: {used}/{cfg.max_photos}</i>",
+            reply_markup=kb.cancel_kb(),
+        )
+        return
+
+    await state.clear()
+    await call.message.answer(
+        "Omad tilaymiz! \U0001F1FA\U0001F1FF",
         reply_markup=kb.main_menu(cfg.is_admin(user_id)),
     )
-    await call.message.answer("Keyingi amal:", reply_markup=kb.after_submit_kb(left > 0))
-    await notify_admins(bot, photo_id)
+    await call.message.answer("Keyingi amal:", reply_markup=kb.after_submit_kb(False))
 
 
 # ------------------------------------------------------------------- qolgan holat
